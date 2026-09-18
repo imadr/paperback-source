@@ -10,6 +10,7 @@ import {
     Request,
     Response,
     SourceIntents,
+    HomeSectionType,
     ChapterProviding,
     MangaProviding,
     SearchResultsProviding,
@@ -20,7 +21,7 @@ import * as cheerio from 'cheerio'
 
 import {
     parseChapterDetails,
-    isLastPage,
+    hasNextPage,
     parseChapters,
     parseHomeSections,
     parseMangaDetails,
@@ -31,7 +32,7 @@ import {
 const RCO_DOMAIN = 'https://readcomicsonline.ru'
 
 export const ReadComicsOnlineInfo: SourceInfo = {
-    version: '2.0.4',
+    version: '2.0.5',
     name: 'ReadComicsOnline',
     icon: 'icon.png',
     author: 'Netsky',
@@ -115,25 +116,40 @@ export class ReadComicsOnline implements SearchResultsProviding, MangaProviding,
         this.CloudFlareError(response.status)
         const $ = cheerio.load(response.data as string)
         parseHomeSections($, sectionCallback)
+
+        const popularRequest = App.createRequest({
+            url: `${RCO_DOMAIN}/comic-list?sort=views&page=1`,
+            method: 'GET'
+        })
+
+        const popularResponse = await this.requestManager.schedule(popularRequest, 1)
+        this.CloudFlareError(popularResponse.status)
+        const popularSection = App.createHomeSection({
+            id: 'popular_comic', title: 'Most Popular Comics', containsMoreItems: true,
+            type: HomeSectionType.singleRowNormal
+        })
+        const popularItems = parseViewMore(cheerio.load(popularResponse.data as string))
+        popularSection.items = popularItems
+        sectionCallback(popularSection)
     }
 
     async getViewMoreItems(homepageSectionId: string, metadata: any): Promise<PagedResults> {
         const page: number = metadata?.page ?? 1
-        let param = ''
+        let sort = ''
 
         switch (homepageSectionId) {
             case 'latest_comic':
-                param = `?page=${page}&sortBy=last_release&asc=false`
+                sort = 'latest'
                 break
             case 'popular_comic':
-                param = `?page=${page}&sortBy=views&asc=false`
+                sort = 'views'
                 break
             default:
                 throw new Error('Requested to getViewMoreItems for a section ID which doesn\'t exist')
         }
 
         const request = App.createRequest({
-            url: `${RCO_DOMAIN}/filterList${param}`,
+            url: `${RCO_DOMAIN}/comic-list?sort=${sort}&page=${page}`,
             method: 'GET'
         })
 
@@ -142,7 +158,7 @@ export class ReadComicsOnline implements SearchResultsProviding, MangaProviding,
         const $ = cheerio.load(response.data as string)
 
         const manga = parseViewMore($)
-        metadata = !isLastPage($) ? { page: page + 1 } : undefined
+        metadata = hasNextPage($) ? { page: page + 1 } : undefined
         return App.createPagedResults({
             results: manga,
             metadata
@@ -150,17 +166,21 @@ export class ReadComicsOnline implements SearchResultsProviding, MangaProviding,
     }
 
     async getSearchResults(query: SearchRequest): Promise<PagedResults> {
+        const page: number = query.page ?? 1
         const request = App.createRequest({
-            url: `${RCO_DOMAIN}/search?query=${encodeURI(query.title ?? '')}`,
+            url: `${RCO_DOMAIN}/advanced-search?name=${encodeURI(query.title ?? '')}&page=${page}`,
             method: 'GET'
         })
 
         const response = await this.requestManager.schedule(request, 1)
         this.CloudFlareError(response.status)
-        const manga = parseSearch(response.data as string)
+        const $ = cheerio.load(response.data as string)
+        const manga = parseSearch($)
+        const metadata = hasNextPage($) ? { page: page + 1 } : undefined
 
         return App.createPagedResults({
-            results: manga
+            results: manga,
+            metadata
         })
 
     }
